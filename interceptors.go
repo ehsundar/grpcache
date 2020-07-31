@@ -14,46 +14,45 @@ type RedisCacheConfig struct {
 	TTL                time.Duration
 }
 
-func WithRedisCacheInterceptor(config RedisCacheConfig) grpc.DialOption {
+func NewRedisCacheInterceptor(config RedisCacheConfig) grpc.UnaryClientInterceptor {
 	rdb, err := redis.DialURL(config.Host)
 	if err != nil {
 		panic(err)
 	}
 
-	return grpc.WithUnaryInterceptor(
-		func(
-			ctx context.Context,
-			method string, req, reply interface{},
-			cc *grpc.ClientConn,
-			invoker grpc.UnaryInvoker,
-			opts ...grpc.CallOption,
-		) error {
-			key, err := config.RequestUniqueIdExt(req)
-			if err != nil {
-				return err
-			}
+	return func(
+		ctx context.Context,
+		method string, req, reply interface{},
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		key, err := config.RequestUniqueIdExt(req)
+		if err != nil {
+			return err
+		}
 
-			cachedReply, err := rdb.Do("GET", key)
-			if err != nil {
-				if err == redis.ErrNil {
-					err := invoker(ctx, method, req, reply, cc, opts...)
+		cachedReply, err := rdb.Do("GET", key)
+		if err != nil {
+			if err == redis.ErrNil {
+				err := invoker(ctx, method, req, reply, cc, opts...)
 
-					serializedReply, err := proto.Marshal(reply.(proto.Message))
-					if err != nil {
-						return err
-					}
-
-					ttl := int32(config.TTL / time.Second)
-					_, err = rdb.Do("SETEX", key, ttl, serializedReply)
+				serializedReply, err := proto.Marshal(reply.(proto.Message))
+				if err != nil {
 					return err
 				}
-				return err
-			}
 
-			err = proto.Unmarshal(cachedReply.([]byte), reply.(proto.Message))
-			if err != nil {
+				ttl := int32(config.TTL / time.Second)
+				_, err = rdb.Do("SETEX", key, ttl, serializedReply)
 				return err
 			}
-			return nil
-		})
+			return err
+		}
+
+		err = proto.Unmarshal(cachedReply.([]byte), reply.(proto.Message))
+		if err != nil {
+			return err
+		}
+		return nil
+	}
 }
