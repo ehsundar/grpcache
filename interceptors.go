@@ -2,6 +2,7 @@ package grpcache
 
 import (
 	"context"
+	"fmt"
 	"github.com/gomodule/redigo/redis"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -10,7 +11,7 @@ import (
 
 type RedisCacheConfig struct {
 	Host               string
-	RequestUniqueIdExt func(req interface{}) (string, error)
+	RequestUniqueIdExt func(req interface{}) string
 	TTL                time.Duration
 }
 
@@ -22,31 +23,31 @@ func NewRedisCacheInterceptor(config RedisCacheConfig) grpc.UnaryClientIntercept
 
 	return func(
 		ctx context.Context,
-		method string, req, reply interface{},
+		method string,
+		req, reply interface{},
 		cc *grpc.ClientConn,
 		invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption,
 	) error {
-		key, err := config.RequestUniqueIdExt(req)
-		if err != nil {
-			return err
-		}
+		requestKey := config.RequestUniqueIdExt(req)
+		cacheKey := fmt.Sprintf("grpcache:%s:%s", method, requestKey)
 
-		cachedReply, err := rdb.Do("GET", key)
-		if err != nil {
-			if err == redis.ErrNil {
-				err := invoker(ctx, method, req, reply, cc, opts...)
+		cachedReply, err := rdb.Do("GET", cacheKey)
+		if cachedReply == nil {
+			err := invoker(ctx, method, req, reply, cc, opts...)
 
-				serializedReply, err := proto.Marshal(reply.(proto.Message))
-				if err != nil {
-					return err
-				}
-
-				ttl := int32(config.TTL / time.Second)
-				_, err = rdb.Do("SETEX", key, ttl, serializedReply)
+			serializedReply, err := proto.Marshal(reply.(proto.Message))
+			if err != nil {
 				return err
 			}
+
+			ttl := int32(config.TTL / time.Second)
+			_, err = rdb.Do("SETEX", cacheKey, ttl, serializedReply)
 			return err
+		} else {
+			if err != nil {
+				return err
+			}
 		}
 
 		err = proto.Unmarshal(cachedReply.([]byte), reply.(proto.Message))
